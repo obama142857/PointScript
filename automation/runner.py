@@ -151,7 +151,8 @@ class BatchAutomationRunner:
             self.log("  [pcot] export semantic groups")
             semantic_group_outputs = self._export_semantic_group_pointclouds(task, pcot_ctx)
 
-        fact_ctx = self._run_fact(task, pcot_ctx)
+        fact_pointcloud_path = self._resolve_fact_pointcloud_path(task)
+        fact_ctx = self._run_fact(task, pcot_ctx, fact_pointcloud_path)
         self._write_fact_done_marker(task, pcot_ctx, fact_ctx)
         return {
             "sample_dir": task.sample_dir,
@@ -357,7 +358,7 @@ class BatchAutomationRunner:
         safe = re.sub(r"[\\/:*?\"<>|]+", "_", name).strip()
         return safe or "group"
 
-    def _run_fact(self, task: SampleTask, pcot_ctx: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_fact(self, task: SampleTask, pcot_ctx: Dict[str, Any], pointcloud_path: str) -> Dict[str, Any]:
         from PySide6.QtCore import QCoreApplication
 
         self.log(f"  [fact] boot UI for {task.cloud_stem}")
@@ -391,13 +392,13 @@ class BatchAutomationRunner:
             self._apply_fact_runtime_config(fact_cfg, AutoConnectConfigAdapter)
 
             # import pointcloud then label
-            ui.file_controller.load_file_by_path(task.pointcloud_path, proj_path=project_dir_str)
+            ui.file_controller.load_file_by_path(pointcloud_path, proj_path=project_dir_str)
             ui.file_controller.load_file_by_path(pcot_ctx["label_output"], proj_path=project_dir_str)
 
             # create matching db scenes (mimic unified import behavior)
             db_file = project_dir / "data.db"
             db = ui.db_controller.getdb(str(db_file).replace('\\', '/'))
-            db.create_scene(Path(task.pointcloud_path).name, path=task.pointcloud_path, scene_type="pointcloud")
+            db.create_scene(Path(pointcloud_path).name, path=pointcloud_path, scene_type="pointcloud")
             db.create_scene(Path(pcot_ctx["label_output"]).name, path=pcot_ctx["label_output"], scene_type="pointcloud")
 
             # choose target pointcloud with label + path
@@ -516,6 +517,19 @@ class BatchAutomationRunner:
         if labels:
             return str(labels[0])
         return None
+
+    def _resolve_fact_pointcloud_path(self, task: SampleTask) -> str:
+        cloud_path = Path(task.pointcloud_path)
+        if cloud_path.suffix.lower() != ".e57":
+            return task.pointcloud_path
+
+        npy_path = cloud_path.with_suffix(".npy")
+        if npy_path.exists() and npy_path.is_file():
+            self.log(f"  [fact] use cached npy for e57 -> {npy_path}")
+            return str(npy_path)
+
+        self.log(f"  [fact] cached npy not found for e57, fallback -> {cloud_path}")
+        return task.pointcloud_path
 
     def _reset_python_modules_for_fact(self) -> None:
         # Pcot and Fact both use top-level module names like "main" and package "src".
