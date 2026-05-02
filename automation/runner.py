@@ -197,6 +197,10 @@ class BatchAutomationRunner:
             ctrl = ActionController()
             ctrl.load_data(task.pointcloud_path)
             self.log(f"  [pcot] loaded points: {ctrl.points.shape[0]}")
+            if Path(task.pointcloud_path).suffix.lower() == ".e57":
+                npy_pointcloud_path = str(Path(task.pointcloud_path).with_suffix(".npy"))
+                self.log(f"  [pcot] cache e57 as npy -> {npy_pointcloud_path}")
+                ctrl.save_data(npy_pointcloud_path)
 
             downsample_length = float(self.config.get("pcot", {}).get("downsample_length", 0.0) or 0.0)
             if downsample_length > 0:
