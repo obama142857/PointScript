@@ -40,3 +40,6 @@ PcotPoints/visualization/tester_res/
 # 系统文件
 .DS_Store
 Thumbs.db
+
+# Packaging artifacts
+PointScript.zip

@@ -273,6 +273,10 @@ class BatchAutomationRunner:
                     "Please regenerate labels in this run (avoid using mismatched existing labels)."
                 )
 
+        export_dir = Path(task.sample_dir) / f"{task.cloud_stem}_semantic_groups"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        self.log(f"  [pcot] semantic groups export dir -> {export_dir}")
+
         outputs: List[Dict[str, Any]] = []
         for group in groups:
             name = str(group.get("name", "")).strip()
@@ -283,8 +287,8 @@ class BatchAutomationRunner:
             mask = np.isin(semantic_labels, semantic_ids)
             out_data = xyzrgb[mask]
             safe_name = self._sanitize_filename_component(name)
-            out_path = Path(task.sample_dir) / f"{task.cloud_stem}_{safe_name}.npy"
-            out_label_path = Path(task.sample_dir) / f"{task.cloud_stem}_{safe_name}_result.npy"
+            out_path = export_dir / f"{task.cloud_stem}_{safe_name}.npy"
+            out_label_path = export_dir / f"{task.cloud_stem}_{safe_name}_result.npy"
             np.save(str(out_path), out_data)
             np.save(str(out_label_path), labels_all[:, mask].astype(np.int32))
             self.log(
