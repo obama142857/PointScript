@@ -319,13 +319,15 @@ class BatchAutomationWindow(QMainWindow):
         g_fact_layout = QGridLayout(g_fact)
         g_fact_layout.setHorizontalSpacing(14)
         g_fact_layout.setVerticalSpacing(8)
+        self.enable_fact_stage = QCheckBox("执行 FactPoints 阶段")
+        g_fact_layout.addWidget(self.enable_fact_stage, 0, 0, 1, 2)
 
         self.fact_mode = QComboBox()
         self.fact_mode.addItem("默认", "default")
         self.fact_mode.addItem("手动", "manual")
         self.fact_mode.addItem("自动优化", "auto")
-        g_fact_layout.addWidget(QLabel("模式"), 0, 0)
-        g_fact_layout.addWidget(self.fact_mode, 0, 1)
+        g_fact_layout.addWidget(QLabel("模式"), 1, 0)
+        g_fact_layout.addWidget(self.fact_mode, 1, 1)
 
         self.fact_merge_rate = QLineEdit()
         self.fact_group_rate = QLineEdit()
@@ -349,7 +351,7 @@ class BatchAutomationWindow(QMainWindow):
         rows_per_col = (len(params) + 1) // 2
         for idx, (label_text, edit) in enumerate(params):
             col_block = 0 if idx < rows_per_col else 1
-            row = 1 + (idx if idx < rows_per_col else (idx - rows_per_col))
+            row = 2 + (idx if idx < rows_per_col else (idx - rows_per_col))
             base_col = col_block * 2
             g_fact_layout.addWidget(QLabel(label_text), row, base_col)
             g_fact_layout.addWidget(edit, row, base_col + 1)
@@ -391,6 +393,7 @@ class BatchAutomationWindow(QMainWindow):
         self.start_btn.clicked.connect(self._start)
         self.stop_btn.clicked.connect(self._stop)
         self.add_group_btn.clicked.connect(self._add_group_editor)
+        self.enable_fact_stage.toggled.connect(self._set_fact_controls_enabled)
 
     def _set_initial_splitter_sizes(self):
         left_hint = self.left_scroll.widget().minimumSizeHint().width()
@@ -411,6 +414,7 @@ class BatchAutomationWindow(QMainWindow):
         self._add_group_editor("管道相关", [1, 10, 11, 12, 13, 14, 15, 24])
         self._add_group_editor("储罐相关", [3, 17, 18, 19, 20])
 
+        self.enable_fact_stage.setChecked(True)
         self.fact_mode.setCurrentIndex(2)
         self.fact_merge_rate.setText("30")
         self.fact_group_rate.setText("80")
@@ -420,6 +424,7 @@ class BatchAutomationWindow(QMainWindow):
         self.fact_radius_diff_tolerance.setText("0.2")
         self.fact_patching_threshold_range.setText("15")
         self.fact_tolerance_angle.setText("18")
+        self._set_fact_controls_enabled(self.enable_fact_stage.isChecked())
 
     def _clear_group_editors(self):
         for editor in self.semantic_group_editors:
@@ -608,6 +613,21 @@ class BatchAutomationWindow(QMainWindow):
         self._append_log(detail)
         QMessageBox.critical(self, "运行失败", detail)
 
+    def _set_fact_controls_enabled(self, enabled: bool):
+        fact_controls = [
+            self.fact_mode,
+            self.fact_merge_rate,
+            self.fact_group_rate,
+            self.fact_tolerance_parallel_cos,
+            self.fact_mini_length,
+            self.fact_radius_ratio_tolerance,
+            self.fact_radius_diff_tolerance,
+            self.fact_patching_threshold_range,
+            self.fact_tolerance_angle,
+        ]
+        for w in fact_controls:
+            w.setEnabled(enabled)
+
     def _collect_config(self) -> Dict[str, Any]:
         groups: List[Dict[str, Any]] = []
         for editor in self.semantic_group_editors:
@@ -626,6 +646,7 @@ class BatchAutomationWindow(QMainWindow):
                 "semantic_groups": groups,
             },
             "fact": {
+                "enabled": self.enable_fact_stage.isChecked(),
                 "mode": (self.fact_mode.currentData() or "default"),
                 "manual": {
                     "merge_rate": int(self.fact_merge_rate.text().strip() or "30"),

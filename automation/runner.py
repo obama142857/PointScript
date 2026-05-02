@@ -138,6 +138,8 @@ class BatchAutomationRunner:
         return summary
 
     def _run_one(self, task: SampleTask) -> Dict[str, Any]:
+        fact_enabled = bool(self.config.get("fact", {}).get("enabled", True))
+
         if task.existing_label_path:
             self.log(f"  [pcot] skip, found existing label: {task.existing_label_path}")
             pcot_ctx = {"label_output": task.existing_label_path, "points": None, "colors": None}
@@ -150,6 +152,19 @@ class BatchAutomationRunner:
                 raise RuntimeError("Stopped by user")
             self.log("  [pcot] export semantic groups")
             semantic_group_outputs = self._export_semantic_group_pointclouds(task, pcot_ctx)
+
+        if not fact_enabled:
+            self.log("  [fact] disabled by config, skip FactPoints stage")
+            return {
+                "sample_dir": task.sample_dir,
+                "pointcloud": task.pointcloud_path,
+                "label_output": pcot_ctx["label_output"],
+                "semantic_group_outputs": semantic_group_outputs,
+                "fact_skipped": True,
+                "fact_project_dir": None,
+                "report_dir": None,
+                "grouped_obj_path": None,
+            }
 
         fact_pointcloud_path = self._resolve_fact_pointcloud_path(task)
         fact_ctx = self._run_fact(task, pcot_ctx, fact_pointcloud_path)
