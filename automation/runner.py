@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable, Optional, Dict, Any, List
 
 import numpy as np
+from automation.project_dirs import load_project_dirs
 
 
 SUPPORTED_EXTS = (".npy", ".e57", ".pcd")
@@ -50,6 +51,7 @@ class BatchAutomationRunner:
         self.progress = progress
         self.should_stop = should_stop
         self._root = Path(__file__).resolve().parent.parent
+        self._project_dirs = load_project_dirs(self._root)
 
     def discover_tasks(self, root_dir: str) -> List[SampleTask]:
         root = Path(root_dir)
@@ -81,6 +83,11 @@ class BatchAutomationRunner:
         return tasks
 
     def run(self, root_dir: str) -> Dict[str, Any]:
+        self.log(
+            "[config] project dirs: "
+            f"pcot={self._project_dirs['pcot_dir_name']}, "
+            f"fact={self._project_dirs['fact_dir_name']}"
+        )
         tasks = self.discover_tasks(root_dir)
         total = len(tasks)
         self.progress(0, total)
@@ -173,7 +180,7 @@ class BatchAutomationRunner:
         self.log(f"  [pcot] headless pipeline for {task.cloud_stem}")
 
         cwd_prev = os.getcwd()
-        pcot_root = self._root / "PcotPoints"
+        pcot_root = self._pcot_root()
         os.chdir(str(pcot_root))
         self._prepend_syspath(str(pcot_root))
 
@@ -321,7 +328,7 @@ class BatchAutomationRunner:
 
         # Reuse Pcot loader for e57/pcd compatibility.
         cwd_prev = os.getcwd()
-        pcot_root = self._root / "PcotPoints"
+        pcot_root = self._pcot_root()
         os.chdir(str(pcot_root))
         self._prepend_syspath(str(pcot_root))
         try:
@@ -347,7 +354,7 @@ class BatchAutomationRunner:
 
         self.log(f"  [fact] boot UI for {task.cloud_stem}")
         cwd_prev = os.getcwd()
-        fact_root = self._root / "FactPoints"
+        fact_root = self._fact_root()
         os.chdir(str(fact_root))
         self._prepend_syspath(str(fact_root))
 
@@ -529,10 +536,25 @@ class BatchAutomationRunner:
         # Inject fake src module to avoid namespace module error during pytorch/inspect loading
         import types
         src_mod = types.ModuleType("src")
-        pcot_src_path = str(self._root / "PcotPoints" / "src")
+        pcot_src_path = str(self._pcot_root() / "src")
         src_mod.__file__ = os.path.join(pcot_src_path, "__init__.py")
         src_mod.__path__ = [pcot_src_path]
         sys.modules["src"] = src_mod
+
+    def _pcot_root(self) -> Path:
+        return self._resolve_project_root("pcot_dir_name")
+
+    def _fact_root(self) -> Path:
+        return self._resolve_project_root("fact_dir_name")
+
+    def _resolve_project_root(self, key: str) -> Path:
+        dir_name = str(self._project_dirs.get(key, "")).strip()
+        if not dir_name:
+            raise RuntimeError(f"Project dir config '{key}' is empty")
+        root = self._root / dir_name
+        if not root.exists() or not root.is_dir():
+            raise FileNotFoundError(f"Project folder not found: {root}")
+        return root
 
     def _prepend_syspath(self, path: str) -> None:
         while path in sys.path:

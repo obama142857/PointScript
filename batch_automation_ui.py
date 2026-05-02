@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from automation.project_dirs import load_project_dirs
 from automation.runner import BatchAutomationRunner
 
 
@@ -208,6 +209,8 @@ class SemanticGroupEditor(QWidget):
 class BatchAutomationWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.repo_root = Path(__file__).resolve().parent
+        self.project_dirs = load_project_dirs(self.repo_root)
         self.semantic_label_options = self._load_semantic_label_options()
         self.semantic_group_editors: List[SemanticGroupEditor] = []
         self.setWindowTitle("PointScript 批量自动化")
@@ -220,7 +223,8 @@ class BatchAutomationWindow(QMainWindow):
         QTimer.singleShot(0, self._set_initial_splitter_sizes)
 
     def _load_semantic_label_options(self) -> List[Dict[str, Any]]:
-        labels_path = Path(__file__).resolve().parent / "PcotPoints" / "src" / "labeler" / "labels.json"
+        pcot_dir = self.project_dirs.get("pcot_dir_name", "PcotPoints")
+        labels_path = self.repo_root / pcot_dir / "src" / "labeler" / "labels.json"
         if not labels_path.exists():
             return []
         try:
