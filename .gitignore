@@ -9,6 +9,7 @@ venv/
 env/
 .env/
 ENV/
+testdata/
 
 # 临时文件和开发缓存
 **/temp/
