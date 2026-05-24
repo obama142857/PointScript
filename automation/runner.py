@@ -164,6 +164,7 @@ class BatchAutomationRunner:
                 "fact_project_dir": None,
                 "report_dir": None,
                 "grouped_obj_path": None,
+                "grouped_json_path": None,
             }
 
         fact_pointcloud_path = self._resolve_fact_pointcloud_path(task)
@@ -177,6 +178,7 @@ class BatchAutomationRunner:
             "fact_project_dir": fact_ctx["project_dir"],
             "report_dir": fact_ctx.get("report_dir"),
             "grouped_obj_path": fact_ctx.get("grouped_obj_path"),
+            "grouped_json_path": fact_ctx.get("grouped_json_path"),
         }
 
     def _write_fact_done_marker(self, task: SampleTask, pcot_ctx: Dict[str, Any], fact_ctx: Dict[str, Any]) -> None:
@@ -188,6 +190,8 @@ class BatchAutomationRunner:
             "label_output": pcot_ctx.get("label_output"),
             "fact_project_dir": fact_ctx.get("project_dir"),
             "report_dir": fact_ctx.get("report_dir"),
+            "grouped_obj_path": fact_ctx.get("grouped_obj_path"),
+            "grouped_json_path": fact_ctx.get("grouped_json_path"),
         }
         marker_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         self.log(f"  [fact] wrote done marker: {marker_path}")
@@ -484,11 +488,14 @@ class BatchAutomationRunner:
                 self.log("  [fact] report")
                 report_dir = self._run_report(ui, project_dir_str, task.cloud_stem)
 
+            grouped_json_path = self._export_grouped_json(ui, task, merged)
+
             ui.close()
             return {
                 "project_dir": project_dir_str,
                 "report_dir": report_dir,
                 "grouped_obj_path": grouped_obj_path,
+                "grouped_json_path": grouped_json_path,
             }
         finally:
             try:
@@ -852,6 +859,15 @@ class BatchAutomationRunner:
             primitive_db=primitive,
             translation_vector=None,  # keep original coordinates and scale
         )
+        return str(out_path)
+
+    def _export_grouped_json(self, ui, task: SampleTask, primitive) -> str:
+        from src.pipes_fitting.tools import save_json_from_primitives  # type: ignore
+
+        out_path = Path(task.sample_dir) / f"{task.cloud_stem}_grouped.json"
+        self.log(f"  [fact] export grouped json -> {out_path}")
+        primitives = primitive.update_primitive()
+        save_json_from_primitives(str(out_path), primitives)
         return str(out_path)
 
     def _run_fitting_test(self, ui, pointcloud, primitive):
