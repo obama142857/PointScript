@@ -312,18 +312,23 @@ class BatchAutomationRunner:
             out_data = xyzrgb[mask]
             safe_name = self._sanitize_filename_component(name)
             out_path = export_dir / f"{task.cloud_stem}_{safe_name}.npy"
+            out_e57_path = export_dir / f"{task.cloud_stem}_{safe_name}.e57"
             out_label_path = export_dir / f"{task.cloud_stem}_{safe_name}_result.npy"
             np.save(str(out_path), out_data)
             np.save(str(out_label_path), labels_all[:, mask].astype(np.int32))
+            e57_saved = self._try_save_e57(str(out_e57_path), out_data[:, :3], out_data[:, 3:6])
             self.log(
                 f"  [pcot] semantic group '{name}' -> {out_path}, {out_label_path} "
                 f"(points={out_data.shape[0]}, ids={semantic_ids})"
             )
+            if e57_saved:
+                self.log(f"  [pcot] semantic group '{name}' e57 -> {out_e57_path}")
             outputs.append(
                 {
                     "name": name,
                     "semantic_ids": semantic_ids,
                     "output_path": str(out_path),
+                    "e57_output_path": str(out_e57_path) if e57_saved else None,
                     "label_output_path": str(out_label_path),
                     "points": int(out_data.shape[0]),
                 }
@@ -376,6 +381,42 @@ class BatchAutomationRunner:
     def _sanitize_filename_component(self, name: str) -> str:
         safe = re.sub(r"[\\/:*?\"<>|]+", "_", name).strip()
         return safe or "group"
+
+    def _try_save_e57(self, filepath: str, points: np.ndarray, colors: np.ndarray) -> bool:
+        if points.ndim != 2 or points.shape[1] < 3:
+            self.log(f"  [pcot][warn] skip e57 export, invalid point shape: {points.shape}")
+            return False
+        if colors.ndim != 2 or colors.shape[1] < 3:
+            colors = np.zeros((points.shape[0], 3), dtype=np.float64)
+
+        try:
+            import pye57  # type: ignore
+        except Exception as exc:
+            self.log(f"  [pcot][warn] skip e57 export, pye57 unavailable: {exc}")
+            return False
+
+        xyz = np.asarray(points[:, :3], dtype=np.float64)
+        rgb = np.asarray(colors[:, :3], dtype=np.float64)
+        if rgb.max(initial=0.0) <= 1.0:
+            rgb = rgb * 255.0
+        rgb = np.clip(np.rint(rgb), 0, 255).astype(np.uint8)
+
+        data = {
+            "cartesianX": xyz[:, 0],
+            "cartesianY": xyz[:, 1],
+            "cartesianZ": xyz[:, 2],
+            "colorRed": rgb[:, 0],
+            "colorGreen": rgb[:, 1],
+            "colorBlue": rgb[:, 2],
+        }
+
+        try:
+            writer = pye57.E57(filepath, mode="w")
+            writer.write_scan_raw(data)
+            return True
+        except Exception as exc:
+            self.log(f"  [pcot][warn] e57 export failed: {filepath} ({exc})")
+            return False
 
     def _run_fact(self, task: SampleTask, pcot_ctx: Dict[str, Any], pointcloud_path: str) -> Dict[str, Any]:
         from PySide6.QtCore import QCoreApplication
