@@ -24,6 +24,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Pcot downsample length. If omitted, uses UI default (0.001).",
     )
+    parser.add_argument(
+        "--task-id",
+        default="pipeline-task-006",
+        help="Task ID written into status.json. If omitted, auto-generated.",
+    )
+    parser.add_argument(
+        "--node-id",
+        type=int,
+        default=6,
+        help="Node ID written into status.json (default: 6).",
+    )
     return parser.parse_args()
 
 
@@ -31,6 +42,10 @@ def build_config(args: argparse.Namespace) -> Dict[str, Any]:
     config = get_default_batch_config()
     if args.downsample_length is not None:
         config["pcot"]["downsample_length"] = float(args.downsample_length)
+    config["status"] = {
+        "task_id": args.task_id,
+        "node_id": int(args.node_id),
+    }
     return config
 
 

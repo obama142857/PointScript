@@ -52,6 +52,11 @@ class BatchAutomationRunner:
         self.should_stop = should_stop
         self._root = Path(__file__).resolve().parent.parent
         self._project_dirs = load_project_dirs(self._root)
+        self._status_path: Optional[Path] = None
+        self._status_data: Dict[str, Any] = {}
+        self._active_task_index: int = 0
+        self._active_total_tasks: int = 0
+        self._active_task_name: str = ""
 
     def discover_tasks(self, root_dir: str) -> List[SampleTask]:
         root = Path(root_dir)
@@ -83,64 +88,123 @@ class BatchAutomationRunner:
         return tasks
 
     def run(self, root_dir: str) -> Dict[str, Any]:
+        self._init_status(root_dir)
+        self._update_status(current_step="discover_tasks")
         self.log(
             "[config] project dirs: "
             f"pcot={self._project_dirs['pcot_dir_name']}, "
             f"fact={self._project_dirs['fact_dir_name']}"
         )
-        tasks = self.discover_tasks(root_dir)
-        total = len(tasks)
-        self.progress(0, total)
-        if total == 0:
-            return {"total": 0, "success": 0, "failed": 0, "results": []}
-
-        results = []
-        success = 0
-        failed = 0
-
-        for idx, task in enumerate(tasks, start=1):
-            if self.should_stop():
-                self.log("[stop] user requested stop")
-                break
-            self.progress(idx - 1, total)
-            self.log(f"[start] ({idx}/{total}) {task.pointcloud_path}")
-            started = time.time()
-            try:
-                one_result = self._run_one(task)
-                one_result["elapsed_sec"] = round(time.time() - started, 2)
-                one_result["status"] = "success"
-                results.append(one_result)
-                success += 1
-                self.log(f"[done] {task.pointcloud_path}")
-            except Exception as exc:
-                failed += 1
-                detail = traceback.format_exc()
-                self.log(f"[error] {task.pointcloud_path}: {exc}")
-                results.append(
-                    {
-                        "sample_dir": task.sample_dir,
-                        "pointcloud": task.pointcloud_path,
-                        "status": "failed",
-                        "error": str(exc),
-                        "traceback": detail,
-                        "elapsed_sec": round(time.time() - started, 2),
-                    }
+        try:
+            tasks = self.discover_tasks(root_dir)
+            total = len(tasks)
+            self.progress(0, total)
+            self._update_status(progress=0, current_step="tasks_discovered")
+            if total == 0:
+                summary = {"total": 0, "success": 0, "failed": 0, "results": []}
+                self._write_summary(root_dir, summary)
+                self._update_status(
+                    status="success",
+                    progress=100,
+                    current_step="no_tasks",
+                    end_time=self._now_str(),
+                    error_info={"code": None, "message": ""},
                 )
+                return summary
 
-        self.progress(min(len(results), total), total)
-        summary = {
-            "total": total,
-            "success": success,
-            "failed": failed,
-            "results": results,
-        }
-        self._write_summary(root_dir, summary)
-        return summary
+            results = []
+            success = 0
+            failed = 0
+            interrupted = False
+
+            for idx, task in enumerate(tasks, start=1):
+                if self.should_stop():
+                    interrupted = True
+                    self.log("[stop] user requested stop")
+                    self._update_status(current_step="stopped_by_user")
+                    break
+                self._active_task_index = idx
+                self._active_total_tasks = total
+                self._active_task_name = Path(task.sample_dir).name
+                self._update_task_step("pipeline", "start", 0, 1)
+                self.progress(idx - 1, total)
+                self.log(f"[start] ({idx}/{total}) {task.pointcloud_path}")
+                started = time.time()
+                try:
+                    one_result = self._run_one(task)
+                    one_result["elapsed_sec"] = round(time.time() - started, 2)
+                    one_result["status"] = "success"
+                    results.append(one_result)
+                    success += 1
+                    self.log(f"[done] {task.pointcloud_path}")
+                except Exception as exc:
+                    failed += 1
+                    detail = traceback.format_exc()
+                    self.log(f"[error] {task.pointcloud_path}: {exc}")
+                    results.append(
+                        {
+                            "sample_dir": task.sample_dir,
+                            "pointcloud": task.pointcloud_path,
+                            "status": "failed",
+                            "error": str(exc),
+                            "traceback": detail,
+                            "elapsed_sec": round(time.time() - started, 2),
+                        }
+                    )
+
+            self.progress(min(len(results), total), total)
+            final_progress = int((min(len(results), total) / total) * 100) if total > 0 else 100
+            summary = {
+                "total": total,
+                "success": success,
+                "failed": failed,
+                "results": results,
+            }
+            self._write_summary(root_dir, summary)
+
+            if interrupted:
+                self._update_status(
+                    status="failure",
+                    progress=final_progress,
+                    current_step="stopped_by_user",
+                    end_time=self._now_str(),
+                    error_info={"code": 499, "message": "Stopped by user."},
+                )
+            elif failed > 0:
+                self._update_status(
+                    status="failure",
+                    progress=100,
+                    current_step="completed_with_errors",
+                    end_time=self._now_str(),
+                    error_info={
+                        "code": 500,
+                        "message": f"{failed} sample(s) failed. Check batch_automation_summary.json and logs.",
+                    },
+                )
+            else:
+                self._update_status(
+                    status="success",
+                    progress=100,
+                    current_step="completed",
+                    end_time=self._now_str(),
+                    error_info={"code": None, "message": ""},
+                )
+            return summary
+        except Exception as exc:
+            self._update_status(
+                status="failure",
+                current_step="fatal_error",
+                end_time=self._now_str(),
+                error_info={"code": 500, "message": str(exc)},
+            )
+            raise
 
     def _run_one(self, task: SampleTask) -> Dict[str, Any]:
         fact_enabled = bool(self.config.get("fact", {}).get("enabled", True))
+        self._update_task_step("pcot", "start", 0, 12)
 
         if task.existing_label_path:
+            self._update_task_step("pcot", "reuse_existing_label", 12, 12)
             self.log(f"  [pcot] skip, found existing label: {task.existing_label_path}")
             pcot_ctx = {"label_output": task.existing_label_path, "points": None, "colors": None}
         else:
@@ -148,6 +212,7 @@ class BatchAutomationRunner:
 
         semantic_group_outputs: List[Dict[str, Any]] = []
         if self.config.get("pcot", {}).get("semantic_group_export_enabled", False):
+            self._update_task_step("pcot_semantic", "semantic_export", 0, 1)
             if self.should_stop():
                 raise RuntimeError("Stopped by user")
             self.log("  [pcot] export semantic groups")
@@ -155,6 +220,7 @@ class BatchAutomationRunner:
 
         if not fact_enabled:
             self.log("  [fact] disabled by config, skip FactPoints stage")
+            self._update_task_step("fact", "skipped", 1, 1)
             return {
                 "sample_dir": task.sample_dir,
                 "pointcloud": task.pointcloud_path,
@@ -168,7 +234,9 @@ class BatchAutomationRunner:
             }
 
         fact_pointcloud_path = self._resolve_fact_pointcloud_path(task)
+        self._update_task_step("fact", "start", 0, 16)
         fact_ctx = self._run_fact(task, pcot_ctx, fact_pointcloud_path)
+        self._update_task_step("pipeline", "sample_done", 1, 1)
         self._write_fact_done_marker(task, pcot_ctx, fact_ctx)
         return {
             "sample_dir": task.sample_dir,
@@ -214,24 +282,32 @@ class BatchAutomationRunner:
             Labels.random_rgb_colors(3000, seed=0, reserve_black=True)
             Labels.init_dict_pack(json_path=str(pcot_root / "src" / "labeler" / "labels.json"))
 
+            self._update_task_step("pcot", "load_data", 1, 12)
             ctrl = ActionController()
             ctrl.load_data(task.pointcloud_path)
             self.log(f"  [pcot] loaded points: {ctrl.points.shape[0]}")
             if Path(task.pointcloud_path).suffix.lower() == ".e57":
+                self._update_task_step("pcot", "cache_e57_to_npy", 2, 12)
                 npy_pointcloud_path = str(Path(task.pointcloud_path).with_suffix(".npy"))
                 self.log(f"  [pcot] cache e57 as npy -> {npy_pointcloud_path}")
                 ctrl.save_data(npy_pointcloud_path)
+            else:
+                self._update_task_step("pcot", "cache_e57_to_npy_skipped", 2, 12)
 
             downsample_length = float(self.config.get("pcot", {}).get("downsample_length", 0.0) or 0.0)
             if downsample_length > 0:
                 if self.should_stop():
                     raise RuntimeError("Stopped by user")
+                self._update_task_step("pcot", "down_sample", 3, 12)
                 self.log(f"  [pcot] down_sample length={downsample_length}")
                 ctrl.down_sample(downsample_length)
                 self.log(f"  [pcot] points after down_sample: {ctrl.points.shape[0]}")
+            else:
+                self._update_task_step("pcot", "down_sample_skipped", 3, 12)
 
             if self.should_stop():
                 raise RuntimeError("Stopped by user")
+            self._update_task_step("pcot", "gnd_extract", 4, 12)
             self.log("  [pcot] gnd_extract")
             ctrl.gnd_extract()
             
@@ -253,9 +329,10 @@ class BatchAutomationRunner:
                 ("axis_pred", ctrl.axis_pred),
                 ("seg_ins", safe_seg_ins),
             ]
-            for name, fn in steps:
+            for i, (name, fn) in enumerate(steps, start=5):
                 if self.should_stop():
                     raise RuntimeError("Stopped by user")
+                self._update_task_step("pcot", name, i, 12)
                 self.log(f"  [pcot] {name}")
                 fn()
 
@@ -263,9 +340,13 @@ class BatchAutomationRunner:
             # If we downsampled for segmentation, restore labels back to the
             # original cloud size before saving.
             if getattr(ctrl, "down_sample_inverse", None) is not None:
+                self._update_task_step("pcot", "up_sample", 11, 12)
                 self.log("  [pcot] up_sample labels to original point count")
                 ctrl.up_sample()
+            else:
+                self._update_task_step("pcot", "up_sample_skipped", 11, 12)
 
+            self._update_task_step("pcot", "save_labels", 12, 12)
             label_output = task.pcot_label_output
             self.log(f"  [pcot] save labels -> {label_output}")
             ctrl.save_labels(label_output)
@@ -302,11 +383,14 @@ class BatchAutomationRunner:
         self.log(f"  [pcot] semantic groups export dir -> {export_dir}")
 
         outputs: List[Dict[str, Any]] = []
+        total_groups = max(1, len(groups))
         for group in groups:
             name = str(group.get("name", "")).strip()
             semantic_ids = [int(x) for x in group.get("semantic_ids", []) if str(x).strip()]
             if not name or not semantic_ids:
                 continue
+            done_groups = len(outputs) + 1
+            self._update_task_step("pcot_semantic", f"semantic_export_group:{name}", done_groups, total_groups)
 
             mask = np.isin(semantic_labels, semantic_ids)
             out_data = xyzrgb[mask]
@@ -441,6 +525,7 @@ class BatchAutomationRunner:
             )
             import config as fact_cfg  # type: ignore
 
+            self._update_task_step("fact", "boot_ui", 1, 16)
             ui = fact_main.MainUI()
             if not self.config.get("show_child_windows", False):
                 ui.hide()
@@ -448,25 +533,31 @@ class BatchAutomationRunner:
             project_dir = Path(task.fact_project_dir)
             project_dir.mkdir(parents=True, exist_ok=True)
             project_dir_str = str(project_dir).replace('\\', '/')
+            self._update_task_step("fact", "prepare_project", 2, 16)
             self._prepare_fact_project(ui, project_dir_str)
             self._apply_fact_runtime_config(fact_cfg, AutoConnectConfigAdapter)
 
             # import pointcloud then label
+            self._update_task_step("fact", "import_pointcloud", 3, 16)
             ui.file_controller.load_file_by_path(pointcloud_path, proj_path=project_dir_str)
+            self._update_task_step("fact", "import_label", 4, 16)
             ui.file_controller.load_file_by_path(pcot_ctx["label_output"], proj_path=project_dir_str)
 
             # create matching db scenes (mimic unified import behavior)
+            self._update_task_step("fact", "create_db_scenes", 5, 16)
             db_file = project_dir / "data.db"
             db = ui.db_controller.getdb(str(db_file).replace('\\', '/'))
             db.create_scene(Path(pointcloud_path).name, path=pointcloud_path, scene_type="pointcloud")
             db.create_scene(Path(pcot_ctx["label_output"]).name, path=pcot_ctx["label_output"], scene_type="pointcloud")
 
             # choose target pointcloud with label + path
+            self._update_task_step("fact", "pick_labeled_pointcloud", 6, 16)
             pointcloud = self._pick_fact_pointcloud(ui, project_dir_str)
             if pointcloud is None:
                 raise RuntimeError("FactPoints: no labeled point cloud found after import")
 
             # fit
+            self._update_task_step("fact", "fit", 7, 16)
             self.log("  [fact] fit")
             ui.fit_controller.proj_path = project_dir_str
             ui.fit_controller.details = {"pointcloud": pointcloud.get_path()}
@@ -497,20 +588,26 @@ class BatchAutomationRunner:
                 raise RuntimeError("FactPoints: fitting result primitive not found")
 
             if self.config["fact"]["mode"] == "auto":
+                self._update_task_step("fact", "auto_optimize_params", 8, 16)
                 self.log("  [fact] auto optimize params")
                 primitives = fitting_primitive.update_primitive()
                 AutoConnectConfigOptimizer.opitimize_all_params(primitives, 0.3)
+            else:
+                self._update_task_step("fact", "auto_optimize_params_skipped", 8, 16)
 
             # patch
+            self._update_task_step("fact", "auto_patch", 9, 16)
             self.log("  [fact] auto patch")
             ui.auto_merge_controller.proj_path = project_dir_str
             patched = self._run_auto_patch(ui, pointcloud, fitting_primitive)
 
             # merge
+            self._update_task_step("fact", "auto_merge", 10, 16)
             self.log("  [fact] auto merge")
             merged = self._run_auto_merge(ui, pointcloud, patched)
 
             # group
+            self._update_task_step("fact", "group", 11, 16)
             self.log("  [fact] group")
             ui.group_controller.details = {
                 "pointcloud": pointcloud.get_path(),
@@ -518,19 +615,26 @@ class BatchAutomationRunner:
                 "downsample_rate": self.config.get("fact", {}).get("group_rate", 100),
             }
             self._run_group(ui, pointcloud, merged)
+            self._update_task_step("fact", "export_grouped_obj", 12, 16)
             grouped_obj_path = self._export_grouped_obj(ui, task, merged)
 
             # fitting test
+            self._update_task_step("fact", "fitting_test", 13, 16)
             self.log("  [fact] fitting test")
             self._run_fitting_test(ui, pointcloud, merged)
 
             report_dir = None
             if self.config.get("enable_report", True):
+                self._update_task_step("fact", "report", 14, 16)
                 self.log("  [fact] report")
                 report_dir = self._run_report(ui, project_dir_str, task.cloud_stem)
+            else:
+                self._update_task_step("fact", "report_skipped", 14, 16)
 
+            self._update_task_step("fact", "export_grouped_json", 15, 16)
             grouped_json_path = self._export_grouped_json(ui, task, merged)
 
+            self._update_task_step("fact", "close_ui", 16, 16)
             ui.close()
             return {
                 "project_dir": project_dir_str,
@@ -730,6 +834,90 @@ class BatchAutomationRunner:
         out = Path(root_dir) / "batch_automation_summary.json"
         out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
         self.log(f"[summary] saved: {out}")
+
+    def _now_str(self) -> str:
+        return time.strftime("%Y-%m-%d %H:%M:%S")
+
+    def _init_status(self, root_dir: str) -> None:
+        status_cfg = self.config.get("status", {}) if isinstance(self.config, dict) else {}
+        task_id = str(status_cfg.get("task_id") or f"pipeline-task-{int(time.time())}")
+        try:
+            node_id = int(status_cfg.get("node_id", 5))
+        except Exception:
+            node_id = 5
+
+        self._status_path = Path(root_dir) / "status.json"
+        self._status_data = {
+            "task_id": task_id,
+            "node_id": node_id,
+            "status": "running",
+            "progress": 0,
+            "current_step": "initializing",
+            "start_time": self._now_str(),
+            "end_time": "",
+            "process_info": {
+                "pids": int(os.getpid()),
+                "name": Path(sys.executable).name,
+            },
+            "error_info": {
+                "code": None,
+                "message": "",
+            },
+        }
+        self._flush_status()
+
+    def _update_status(self, **kwargs: Any) -> None:
+        if not self._status_data:
+            return
+        for key, value in kwargs.items():
+            self._status_data[key] = value
+        if "progress" in self._status_data:
+            try:
+                p = int(self._status_data.get("progress", 0))
+            except Exception:
+                p = 0
+            self._status_data["progress"] = max(0, min(100, p))
+        self._flush_status()
+
+    def _update_task_step(self, stage: str, step: str, step_idx: int, step_total: int) -> None:
+        total_tasks = max(1, self._active_total_tasks)
+        task_idx = max(1, self._active_task_index)
+        safe_total = max(1, step_total)
+        safe_idx = max(0, min(step_idx, safe_total))
+        frac = float(safe_idx) / float(safe_total)
+
+        # Map stage-local progress to task-level progress so status remains monotonic:
+        # pcot: 0%~40%, semantic export: 40%~50%, fact: 50%~100%.
+        if stage == "pcot":
+            task_frac = 0.0 + frac * 0.40
+        elif stage == "pcot_semantic":
+            task_frac = 0.40 + frac * 0.10
+        elif stage == "fact":
+            task_frac = 0.50 + frac * 0.50
+        elif stage == "pipeline" and step == "sample_done":
+            task_frac = 1.0
+        else:
+            task_frac = frac
+
+        progress_pct = int(round((((task_idx - 1) + task_frac) / float(total_tasks)) * 100))
+        prev_progress = 0
+        try:
+            prev_progress = int(self._status_data.get("progress", 0))
+        except Exception:
+            prev_progress = 0
+        progress_pct = max(prev_progress, progress_pct)
+        current_step = (
+            f"sample {task_idx}/{total_tasks} | {self._active_task_name or 'unknown'} | {stage}.{step}"
+        )
+        self._update_status(progress=progress_pct, current_step=current_step)
+
+    def _flush_status(self) -> None:
+        if self._status_path is None:
+            return
+        self._status_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self._status_path.with_name(self._status_path.name + ".tmp")
+        tmp.write_text(json.dumps(self._status_data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._status_path)
 
     def _run_worker_sync(self, ui, worker_cls, name: str, fn: Callable) -> None:
         self.log(f"  [pcot] {name}")
